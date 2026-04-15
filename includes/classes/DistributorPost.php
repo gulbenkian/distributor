@@ -42,10 +42,13 @@ use WP_Post;
  * @method array get_meta()
  * @method array get_terms()
  * @method array get_media()
+ * @method array get_extra_data()
  * @method array post_data()
  * @method array to_insert( array $args = [] )
  * @method array to_pull_list( array $args = [] )
  * @method array to_rest( array $args = [] )
+ * @method array parse_blocks_for_attribute_values( string $block, string $block_name, string|array $block_attribute )
+ * @method array get_shortcode_attribute_values( string $content, string $shortcode, string|array $shortcode_attribute )
  */
 class DistributorPost {
 	/**
@@ -626,6 +629,11 @@ class DistributorPost {
 			$raw_media = $this->parse_media_blocks();
 		} else {
 			$raw_media = get_attached_media( get_allowed_mime_types(), $post_id );
+			// Parse images from post content.
+			$parsed_media = $this->parse_images_from_post_content();
+			foreach ( $parsed_media as $media_post ) {
+				$raw_media[ $media_post->ID ] = $media_post;
+			}
 		}
 
 		$featured_image_id = $this->get_post_thumbnail_id();
@@ -633,7 +641,7 @@ class DistributorPost {
 		$media_array       = array();
 
 		foreach ( $raw_media as $media_post ) {
-			$media_item = Utils\format_media_post( $media_post );
+			$media_item = Utils\format_media_post( $media_post, $post_id );
 
 			if ( $media_item['featured'] ) {
 				$found_featured = true;
@@ -653,6 +661,276 @@ class DistributorPost {
 	}
 
 	/**
+	 * Get the extra data for the post to be processed on the target site.
+	 *
+	 * @since 2.2.0
+	 *
+	 * @return array[] {
+	 *   Array of extra data keyed by the data name.
+	 *
+	 *   @type mixed $data_name The extra data returned by the callback function.
+	 * }
+	 */
+	protected function get_extra_data() {
+		// Post data to pass to the filter.
+		$post_data = array(
+			'title'                          => html_entity_decode( get_the_title( $this->post->ID ), ENT_QUOTES, get_bloginfo( 'charset' ) ),
+			'slug'                           => $this->post->post_name,
+			'type'                           => $this->post->post_type,
+			'content'                        => Utils\get_processed_content( $this->post->post_content ),
+			'excerpt'                        => $this->post->post_excerpt,
+			'parent'                         => ! empty( $this->post->post_parent ) ? (int) $this->post->post_parent : 0,
+			'status'                         => $this->post->post_status,
+			'date'                           => $this->post->post_date,
+			'date_gmt'                       => $this->post->post_date_gmt,
+
+			// Original site and post data.
+			'distributor_original_site_name' => $this->source_site['name'],
+			'distributor_original_site_url'  => $this->source_site['home_url'],
+			'distributor_original_post_url'  => $this->get_permalink(),
+			'distributor_original_post_id'   => $this->post->ID,
+		);
+
+		/**
+		 * Filters whether to process extra data for the post.
+		 *
+		 * @since 2.2.0
+		 * @hook dt_process_extra_data
+		 *
+		 * @param {bool} $process_extra_data Whether to process extra data.
+		 * @param {array} $post_data The post data.
+		 * @return {bool} Whether to process extra data.
+		 */
+		if ( ! apply_filters( 'dt_process_extra_data', true, $post_data ) ) {
+			return array();
+		}
+
+		$extra_data      = array();
+		$registered_data = distributor_get_registered_data();
+
+		foreach ( $registered_data as $data_key => $data ) {
+			$location    = $data['location'];
+			$attributes  = $data['attributes'];
+			$callback_fn = $data['pre_distribute_cb'] ?? null;
+
+			// Skip if the callback function is not provided or not callable.
+			if ( empty( $callback_fn ) || ! is_callable( $callback_fn ) ) {
+				continue;
+			}
+
+			if ( 'post_meta' === $location ) {
+				$meta_key = $attributes['meta_key'] ?? '';
+				if ( empty( $meta_key ) ) {
+					continue;
+				}
+
+				// Handle multiple meta keys.
+				if ( is_array( $meta_key ) ) {
+					$meta_data = array();
+					foreach ( $meta_key as $key ) {
+						$meta_value = get_post_meta( $this->post->ID, $key, false );
+						if ( is_array( $meta_value ) && 1 === count( $meta_value ) ) {
+							$meta_data[ $key ] = $meta_value[0];
+						} else {
+							$meta_data[ $key ] = $meta_value;
+						}
+					}
+					$extra_data[ $data_key ] = call_user_func_array( $callback_fn, array( $meta_data, $this->post->ID ) );
+					continue;
+				}
+
+				$meta_value = get_post_meta( $this->post->ID, $meta_key, false );
+				if ( is_array( $meta_value ) && 1 === count( $meta_value ) ) {
+					$meta_data = $meta_value[0];
+				} else {
+					$meta_data = $meta_value;
+				}
+				$extra_data[ $data_key ] = call_user_func_array( $callback_fn, array( $meta_data, $this->post->ID ) );
+			} elseif ( 'post_content' === $location ) {
+				$shortcode  = $attributes['shortcode'] ?? '';
+				$block_name = $attributes['block_name'] ?? '';
+				if ( empty( $shortcode ) && empty( $block_name ) ) {
+					continue;
+				}
+
+				// Process the block if block name is provided.
+				if ( ! empty( $block_name ) && $this->has_blocks() ) {
+					$block_attribute = $attributes['block_attribute'] ?? '';
+					if ( ! empty( $block_attribute ) && $this->has_block( $block_name ) ) {
+						$attribute_values = array();
+						$blocks           = parse_blocks( $this->post->post_content );
+
+						foreach ( $blocks as $block ) {
+							$attribute_values = array_merge( $attribute_values, $this->parse_blocks_for_attribute_values( $block, $block_name, $block_attribute ) );
+						}
+
+						$block_data = array();
+						if ( ! empty( $attribute_values ) ) {
+							foreach ( $attribute_values as $value ) {
+								$block_data[] = call_user_func_array( $callback_fn, array( $value, $this->post->ID ) );
+							}
+						}
+
+						$extra_data[ $data_key ] = $block_data;
+					}
+				}
+
+				// Process the shortcode if shortcode is provided.
+				if ( ! empty( $shortcode ) ) {
+					$shortcode_attribute = $attributes['shortcode_attribute'] ?? '';
+					if ( ! empty( $shortcode_attribute ) && has_shortcode( $this->post->post_content, $shortcode ) ) {
+						$attribute_values = $this->get_shortcode_attribute_values( $this->post->post_content, $shortcode, $shortcode_attribute );
+
+						$shortcode_data = array();
+						if ( ! empty( $attribute_values ) ) {
+							foreach ( $attribute_values as $value ) {
+								$shortcode_data[] = call_user_func_array( $callback_fn, array( $value, $this->post->ID ) );
+							}
+						}
+
+						$extra_data[ $data_key ] = $shortcode_data;
+					}
+				}
+			}
+		}
+
+		/**
+		 * Filters the extra data for the post to be processed on the target site.
+		 *
+		 * @since 2.2.0
+		 * @hook dt_extra_data
+		 *
+		 * @param {array}           $extra_data Extra data for the post.
+		 * @param {DistributorPost} $this       The DistributorPost object.
+		 * @return {array} Extra data for the post.
+		 */
+		$extra_data = apply_filters( 'dt_extra_data', $extra_data, $this );
+
+		return $extra_data;
+	}
+
+	/**
+	 * Parse blocks to obtain value of given attribute.
+	 *
+	 * @since 2.2.0
+	 *
+	 * @param array        $block           Block to parse.
+	 * @param string       $block_name      Block name to look for.
+	 * @param string|array $block_attribute Block attribute(s) to look for.
+	 * @return array Array of attribute values.
+	 */
+	protected function parse_blocks_for_attribute_values( $block, $block_name, $block_attribute ) {
+		$attribute_values = array();
+
+		if ( ! empty( $block['innerBlocks'] ) ) {
+			foreach ( $block['innerBlocks'] as $inner_block ) {
+				$attribute_values = array_merge( $attribute_values, $this->parse_blocks_for_attribute_values( $inner_block, $block_name, $block_attribute ) );
+			}
+		}
+
+		if ( $block['blockName'] === $block_name ) {
+			// Handle multiple block attributes.
+			if ( is_array( $block_attribute ) ) {
+				$data = array();
+				foreach ( $block_attribute as $attribute ) {
+					if ( isset( $block['attrs'][ $attribute ] ) ) {
+						$data[ $attribute ] = $block['attrs'][ $attribute ];
+					}
+				}
+				$attribute_values[] = $data;
+			} elseif ( isset( $block['attrs'][ $block_attribute ] ) ) {
+				$attribute_values[] = $block['attrs'][ $block_attribute ];
+			}
+		}
+
+		return $attribute_values;
+	}
+
+	/**
+	 * Get the attribute values of a given shortcode.
+	 *
+	 * @since 2.2.0
+	 *
+	 * @param string       $content   The post content.
+	 * @param string       $shortcode The shortcode to look for.
+	 * @param string|array $attribute The attribute(s) to look for.
+	 * @return array Array of attribute values.
+	 */
+	protected function get_shortcode_attribute_values( $content, $shortcode, $attribute ) {
+		$attribute_values = array();
+
+		// Build a regex that matches only our target shortcode.
+		$pattern = get_shortcode_regex( array( $shortcode ) );
+
+		// Use preg_match_all to find all matching shortcodes.
+		preg_match_all( "/$pattern/", $content, $matches, PREG_SET_ORDER );
+
+		// Loop through each matched shortcode.
+		foreach ( $matches as $match ) {
+			// $match[0] is full match, $match[2] is shortcode tag and $match[3] is attributes string.
+			if ( $match[2] === $shortcode ) {
+				$attrs = shortcode_parse_atts( $match[3] );
+				if ( is_array( $attribute ) ) {
+					$data = array();
+					foreach ( $attribute as $attr ) {
+						if ( isset( $attrs[ $attr ] ) ) {
+							$data[ $attr ] = $attrs[ $attr ];
+						}
+					}
+					$attribute_values[] = $data;
+				} elseif ( isset( $attrs[ $attribute ] ) ) {
+					$attribute_values[] = $attrs[ $attribute ];
+				}
+			}
+		}
+
+		return $attribute_values;
+	}
+
+	/**
+	 * Parse the post's content to obtain media items by image tags.
+	 *
+	 * @return array<WP_Post> Array of media posts.
+	 */
+	protected function parse_images_from_post_content() {
+		$processor = new \WP_HTML_Tag_Processor( $this->post->post_content );
+
+		$media = array();
+		while ( $processor->next_tag( 'img' ) ) {
+			$classes = explode( ' ', $processor->get_attribute( 'class' ) ?? ' ' );
+
+			if ( ! is_array( $classes ) ) {
+				continue;
+			}
+
+			// Filter out classes that are not image classes.
+			$classes = array_filter(
+				$classes,
+				function( $class ) {
+					return strpos( $class, 'wp-image-' ) === 0;
+				}
+			);
+
+			if ( empty( $classes ) ) {
+				continue;
+			}
+
+			$image_id   = (int) str_replace( 'wp-image-', '', current( $classes ) );
+			$media_post = get_post( $image_id );
+
+			if ( empty( $media_post ) ) {
+				continue;
+			}
+
+			$media[ $media_post->ID ] = $media_post;
+		}
+
+		$media = array_filter( $media );
+
+		return $media;
+	}
+
+	/**
 	 * Parse the post's content to obtain media items.
 	 *
 	 * This uses the block parser to find media items within the post content
@@ -666,7 +944,9 @@ class DistributorPost {
 		$found = false;
 
 		// Note: changes to the cache key or group should be reflected in `includes/settings.php`
-		$media = wp_cache_get( 'dt_media::{$post_id}', 'dt::post', false, $found );
+		$cache_key   = "dt_media::{$this->post->ID}";
+		$cache_group = 'dt::post';
+		$media       = wp_cache_get( $cache_key, $cache_group, false, $found );
 
 		if ( ! $found ) {
 			// Parse blocks to determine attached media.
@@ -679,7 +959,7 @@ class DistributorPost {
 			}
 
 			// Only the IDs are cached to keep the cache size down.
-			wp_cache_set( 'dt_media::{$post_id}', $media, 'dt::post' );
+			wp_cache_set( $cache_key, $media, $cache_group );
 		}
 
 		/*
@@ -746,7 +1026,11 @@ class DistributorPost {
 		}
 
 		if ( in_array( $block['blockName'], $block_names, true ) ) {
-			$media[] = $block['attrs'][ $media_blocks[ $block['blockName'] ] ];
+			$attribute_key = $media_blocks[ $block['blockName'] ];
+
+			if ( isset( $block['attrs'][ $attribute_key ] ) ) {
+				$media[] = $block['attrs'][ $attribute_key ];
+			}
 		}
 
 		return $media;
@@ -782,6 +1066,9 @@ class DistributorPost {
 			'excerpt'                        => $this->post->post_excerpt,
 			'parent'                         => ! empty( $this->post->post_parent ) ? (int) $this->post->post_parent : 0,
 			'status'                         => $this->post->post_status,
+			'date'                           => $this->post->post_date,
+			'date_gmt'                       => $this->post->post_date_gmt,
+
 			'distributor_media'              => $this->get_media(),
 			'distributor_terms'              => $this->get_terms(),
 			'distributor_meta'               => $this->get_meta(),
@@ -791,6 +1078,9 @@ class DistributorPost {
 			'distributor_original_site_url'  => $this->source_site['home_url'],
 			'distributor_original_post_url'  => $this->get_permalink(),
 			'distributor_original_post_id'   => $this->post->ID,
+
+			// Extra data for handling stored IDs.
+			'distributor_extra_data'         => $this->get_extra_data(),
 		);
 	}
 
@@ -857,11 +1147,19 @@ class DistributorPost {
 		if ( ! empty( $args['remote_post_id'] ) ) {
 			// Updating an existing post.
 			$insert['ID'] = (int) $args['remote_post_id'];
+			// Never update the post status when updating a post.
 			unset( $insert['post_status'] );
+		} elseif ( ! empty( $args['post_status'] ) ) {
+			$insert['post_status'] = $args['post_status'];
 		}
 
-		if ( ! empty( $args['post_status'] ) ) {
-			$insert['post_status'] = $args['post_status'];
+		if (
+			isset( $insert['post_status'] )
+			&& 'future' === $insert['post_status']
+		) {
+			// Set the post date to the future date.
+			$insert['post_date']     = $post_data['date'];
+			$insert['post_date_gmt'] = $post_data['date_gmt'];
 		}
 
 		// Post meta used by wp_insert_post, wp_update_post.
@@ -871,6 +1169,10 @@ class DistributorPost {
 		);
 		if ( ! empty( $post_data['parent'] ) ) {
 			$insert['meta_input']['dt_original_post_parent'] = $post_data['parent'];
+		}
+
+		if ( ! empty( $post_data['distributor_extra_data'] ) ) {
+			$insert['distributor_extra_data'] = $post_data['distributor_extra_data'];
 		}
 
 		return $insert;
@@ -907,7 +1209,17 @@ class DistributorPost {
 		$display_data['distributor_original_site_name'] = $this->source_site['name'];
 		$display_data['distributor_original_site_url']  = $this->source_site['home_url'];
 
-		return $display_data;
+		/**
+		 * Filters the post data for when they are being formatted for a pull
+		 *
+		 * @since 2.0.3
+		 * @hook dt_post_to_pull
+		 *
+		 * @param {array} $display_data The post data.
+		 *
+		 * @return {array} Modified post data.
+		 */
+		return apply_filters( 'dt_post_to_pull', $display_data );
 	}
 
 	/**
@@ -920,6 +1232,15 @@ class DistributorPost {
 	 */
 	protected function to_rest( $rest_args = array() ) {
 		$post_data = $this->post_data();
+
+		/*
+		 * Unset dates.
+		 *
+		 * External connections do not allow for the pulling or pushing of
+		 * scheduled posts so these can be ignored.
+		 */
+		unset( $post_data['date'] );
+		unset( $post_data['date_gmt'] );
 
 		if ( ! empty( $post_data['parent'] ) ) {
 			$post_data['distributor_original_post_parent'] = (int) $post_data['parent'];

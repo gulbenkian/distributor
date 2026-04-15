@@ -158,7 +158,20 @@ function get_connections() {
 	$external_connections_query = new \WP_Query(
 		array(
 			'post_type'      => 'dt_ext_connection',
-			'posts_per_page' => 200, // @codingStandardsIgnoreLine This high pagination limit is purposeful
+			/**
+			 * Filter the maximum number of external connections to load.
+			 *
+			 * Modify the maximum number of external connection post types are
+			 * queried with requesting the post type.
+			 *
+			 * @hook dt_external_connections_per_page
+			 *
+			 * @since 2.2.0
+			 *
+			 * @param {int} $max_connections The maximum number of external connections to load.
+			 * @return {int} The maximum number of external connections to load.
+			 */
+			'posts_per_page' => apply_filters( 'dt_external_connections_per_page', 200 ), // @codingStandardsIgnoreLine This high pagination limit is purposeful
 			'no_found_rows'  => true,
 			'post_status'    => 'publish',
 		)
@@ -246,7 +259,7 @@ function get_connections() {
  */
 function ajax_push() {
 	if ( ! check_ajax_referer( 'dt-push', 'nonce', false ) ) {
-		wp_send_json_error( new \WP_Error( 'invalid-referal', __( 'Invalid Ajax referer.', 'distributor' ) ) );
+		wp_send_json_error( new \WP_Error( 'invalid-referral', __( 'Invalid Ajax referer.', 'distributor' ) ) );
 		exit;
 	}
 

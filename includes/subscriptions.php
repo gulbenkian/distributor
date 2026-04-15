@@ -95,7 +95,7 @@ function create_remote_subscription( ExternalConnection $connection, $remote_pos
 	 * For a post that is distributed, for each distributed post, we create a subscription (CPT) to keep track
 	 * of the copy. Attached to each subscription is a unique signature. When a post is updated, we check for subscriptions.
 	 * If subscriptions exist, we grab the signature for each subscription and send the update to the remote copy along
-	 * with the signature. The signature is a passcode of sorts. The subscription signature must match the copied post's
+	 * with the signature. The signature is a pass code of sorts. The subscription signature must match the copied post's
 	 * signature otherwise the update is not authorized.
 	 *
 	 * You might be wondering why we don't just use HTTP Basic Auth or OAuth since we've already set that up.
@@ -270,14 +270,15 @@ function send_notifications( $post ) {
 			'post_id'   => $remote_post_id,
 			'signature' => $signature,
 			'post_data' => [
-				'title'             => html_entity_decode( get_the_title( $post_id ), ENT_QUOTES, get_bloginfo( 'charset' ) ),
-				'slug'              => $post->post_name,
-				'post_type'         => $post->post_type,
-				'content'           => Utils\get_processed_content( $post->post_content ),
-				'excerpt'           => $post->post_excerpt,
-				'distributor_media' => \Distributor\Utils\prepare_media( $post_id ),
-				'distributor_terms' => \Distributor\Utils\prepare_taxonomy_terms( $post_id, array( 'show_in_rest' => true ) ),
-				'distributor_meta'  => \Distributor\Utils\prepare_meta( $post_id ),
+				'title'                  => html_entity_decode( get_the_title( $post_id ), ENT_QUOTES, get_bloginfo( 'charset' ) ),
+				'slug'                   => $post->post_name,
+				'post_type'              => $post->post_type,
+				'content'                => Utils\get_processed_content( $post->post_content ),
+				'excerpt'                => $post->post_excerpt,
+				'distributor_media'      => \Distributor\Utils\prepare_media( $post_id ),
+				'distributor_terms'      => \Distributor\Utils\prepare_taxonomy_terms( $post_id, array( 'show_in_rest' => true ) ),
+				'distributor_meta'       => \Distributor\Utils\prepare_meta( $post_id ),
+				'distributor_extra_data' => \Distributor\Utils\prepare_extra_data( $post_id ),
 			],
 		];
 

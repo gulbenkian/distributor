@@ -124,11 +124,11 @@ function add_debug_info( $info ) {
 			],
 			[
 				'label' => __( 'Internal Connections', 'distributor' ),
-				'value' => get_formatted_internal_connnections(),
+				'value' => get_formatted_internal_connections(),
 			],
 			[
 				'label' => __( 'External Connections', 'distributor' ),
-				'value' => get_formatted_external_connnections(),
+				'value' => get_formatted_external_connections(),
 			],
 		]
 	);
@@ -144,9 +144,19 @@ function add_debug_info( $info ) {
 /**
  * Get and format internal connections.
  *
- * @return array
+ * @deprecated 2.0.4 Use get_formatted_internal_connections
  */
 function get_formatted_internal_connnections() {
+	_deprecated_function( __FUNCTION__, '2.0.4', __NAMESPACE__ . '\\get_formatted_internal_connections' );
+	return get_formatted_internal_connections();
+}
+
+/**
+ * Get and format internal connections.
+ *
+ * @return array
+ */
+function get_formatted_internal_connections() {
 	if ( empty( Connections::factory()->get_registered()['networkblog'] ) ) {
 		return __( 'N/A', 'distributor' );
 	}
@@ -176,9 +186,19 @@ function get_formatted_internal_connnections() {
 /**
  * Get and format external connections.
  *
- * @return array
+ * @deprecated 2.0.4 Use get_formatted_external_connections
  */
 function get_formatted_external_connnections() {
+	_deprecated_function( __FUNCTION__, '2.0.4', __NAMESPACE__ . '\\get_formatted_external_connections' );
+	return get_formatted_external_connections();
+}
+
+/**
+ * Get and format external connections.
+ *
+ * @return array
+ */
+function get_formatted_external_connections() {
 
 	$output = [];
 
@@ -187,7 +207,20 @@ function get_formatted_external_connnections() {
 			'post_type'      => 'dt_ext_connection',
 			'fields'         => 'ids',
 			'no_found_rows'  => true,
-			'posts_per_page' => 100,
+			/**
+			 * Filter the maximum number of external connections to load.
+			 *
+			 * Modify the maximum number of external connection post types are
+			 * queried with requesting the post type.
+			 *
+			 * @hook dt_external_connections_per_page
+			 *
+			 * @since 2.2.0
+			 *
+			 * @param {int} $max_connections The maximum number of external connections to load.
+			 * @return {int} The maximum number of external connections to load.
+			 */
+			'posts_per_page' => apply_filters( 'dt_external_connections_per_page', 200 ), // @codingStandardsIgnoreLine This high pagination limit is purposeful
 		)
 	);
 
@@ -267,7 +300,7 @@ function get_external_connection_status( $external_connection_status ) {
 		}
 
 		if ( empty( $external_connection_status['can_post'] ) ) {
-			$status = __( 'warning', 'distributor' );
+			$status = __( 'error', 'distributor' );
 		}
 	}
 
